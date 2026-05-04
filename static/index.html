@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentGuard — AI 에이전트 보안 관제</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="header">
+  <div class="header-brand">
+    <span class="brand-icon">🛡️</span>
+    <div>
+      <div class="brand-name">AgentGuard</div>
+      <div class="brand-sub">AI 에이전트 보안 관제 시스템</div>
+    </div>
+  </div>
+
+  <div class="header-stats">
+    <div class="stat-chip stat-allow">
+      <span>✅</span>
+      <div>
+        <div class="stat-num" id="cnt-allow">0</div>
+        <div class="stat-lbl">허용</div>
+      </div>
+    </div>
+    <div class="stat-chip stat-block">
+      <span>🚫</span>
+      <div>
+        <div class="stat-num" id="cnt-block">0</div>
+        <div class="stat-lbl">차단</div>
+      </div>
+    </div>
+    <div class="stat-chip stat-mask">
+      <span>🔒</span>
+      <div>
+        <div class="stat-num" id="cnt-mask">0</div>
+        <div class="stat-lbl">마스킹</div>
+      </div>
+    </div>
+    <div class="stat-chip stat-pending">
+      <span>⏳</span>
+      <div>
+        <div class="stat-num" id="cnt-pending">0</div>
+        <div class="stat-lbl">승인 대기</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="header-privacy">
+    <div class="privacy-label-wrap">
+      <span class="privacy-icon" id="privacy-icon">🔓</span>
+      <span id="privacy-label">프라이버시 모드</span>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="privacy-toggle">
+      <span class="toggle-track"></span>
+    </label>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- LEFT: Permissions -->
+  <aside class="panel" id="panel-perms">
+    <div class="panel-hd">
+      <h2>🔐 권한 설정</h2>
+      <p class="panel-sub">스마트폰처럼 AI 에이전트 권한을 직접 설정하세요</p>
+    </div>
+    <div class="panel-body" id="perms-list"></div>
+    <div class="perm-legend">
+      <span class="badge-allow">허용</span> 자동 실행 &nbsp;
+      <span class="badge-approve">승인</span> 사용자 확인 후 실행 &nbsp;
+      <span class="badge-block">차단</span> 항상 거부
+    </div>
+  </aside>
+
+  <!-- CENTER: Simulator -->
+  <section class="panel" id="panel-agent">
+    <div class="panel-hd">
+      <h2>💬 에이전트 시뮬레이터</h2>
+      <p class="panel-sub">시나리오를 눌러 보안 흐름을 직접 체험하세요</p>
+    </div>
+    <div id="scenarios-row"></div>
+    <div class="chat-wrap">
+      <div class="chat-feed" id="chat-feed">
+        <div class="chat-empty">
+          <div class="empty-icon">🤖</div>
+          <div class="empty-title">AI 에이전트 대기 중</div>
+          <div class="empty-sub">위 시나리오 버튼을 클릭해 시뮬레이션을 시작하세요.</div>
+        </div>
+      </div>
+    </div>
+    <div class="privacy-banner" id="privacy-banner">
+      🔒 프라이버시 모드 활성화 — 외부 API 전송이 모두 차단됩니다
+    </div>
+  </section>
+
+  <!-- RIGHT: Logs -->
+  <aside class="panel" id="panel-logs">
+    <div class="panel-hd log-hd">
+      <h2>📋 행동 로그</h2>
+      <button class="clear-btn" id="btn-clear">초기화</button>
+    </div>
+    <div class="panel-body log-feed" id="log-feed">
+      <div class="log-empty">
+        시나리오를 실행하면<br>여기에 실시간 로그가 표시됩니다.
+      </div>
+    </div>
+  </aside>
+
+</main>
+
+<!-- Approval Modal -->
+<div class="modal-backdrop" id="modal-backdrop">
+  <div class="modal">
+    <div class="modal-icon">⚠️</div>
+    <div class="modal-title">사용자 승인 필요</div>
+    <div class="modal-sub">AI 에이전트가 다음 작업을 요청합니다</div>
+    <div class="modal-card" id="modal-content"></div>
+    <div class="modal-btns">
+      <button class="btn-deny" id="btn-deny">❌ 거부</button>
+      <button class="btn-approve" id="btn-approve">✅ 승인</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
