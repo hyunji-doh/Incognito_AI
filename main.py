@@ -1,11 +1,27 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
-import re, uuid, time
+import re, uuid, time, base64, os, json
 from datetime import datetime
+from urllib.parse import urlencode
+
+os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+
+try:
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import Flow
+    from googleapiclient.discovery import build
+    GOOGLE_AVAILABLE = True
+except ImportError:
+    GOOGLE_AVAILABLE = False
+
+SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+CREDENTIALS_FILE = "credentials.json"
+TOKEN_FILE = "token.json"
 
 app = FastAPI(title="AgentGuard")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -96,8 +112,8 @@ def mask_data(text: str):
     masked, found = text, []
     for label, pattern in SENSITIVE.items():
         for match in re.findall(pattern, masked):
-            found.append({"type": label, "original": match})
             replace = match[:2] + "*" * max(len(match) - 4, 2) + match[-2:] if len(match) > 5 else "*" * len(match)
+            found.append({"type": label, "original": match, "masked": replace})
             masked = masked.replace(match, replace, 1)
     return masked, found
 
@@ -224,11 +240,15 @@ def run_benchmark():
         elapsed = (time.perf_counter() - t0) * 1000
         times.append(elapsed)
 
+        detected_types = [f["type"] for f in found]
         detected = len(found) > 0
         expected = case["expected"]
-        if expected and detected:
+        expected_label = case["label"]
+        correct_type_detected = expected_label is not None and expected_label in detected_types
+
+        if expected and correct_type_detected:
             outcome = "TP"; tp += 1
-        elif expected and not detected:
+        elif expected and not correct_type_detected:
             outcome = "FN"; fn += 1
         elif not expected and not detected:
             outcome = "TN"; tn += 1
@@ -404,16 +424,15 @@ def clear_logs():
 def get_scenarios():
     return [
         {
-            "id": "s1", "title": "일정 & 메일 정리",
-            "prompt": "오늘 일정이랑 메일 정리해줘",
-            "desc": "캘린더 읽기 → Gmail 읽기 → 개인정보 마스킹 → 미신뢰 도메인 차단 → 메일 발송 승인 요청",
+            "id": "s1", "title": "메일 요약 & 보안",
+            "prompt": "받은 메일 요약해서 보내줘",
+            "desc": "Gmail 읽기 → 개인정보 마스킹 → 미신뢰 도메인 차단 → 요약 메일 발송 승인 요청",
             "preset": "standard",
-            "final_reply": "오늘 일정 요약입니다:\n\n• 10:00 팀 스탠드업\n• 14:00 기획 리뷰\n• 16:00 고객 미팅\n\n주요 메일:\n• 홍길동님 계약 요청 건 (민감정보는 마스킹 처리됨)\n• 팀 공지 2건\n\n참고: 외부 서버로의 데이터 전송 시도가 감지되어 차단되었습니다.",
+            "final_reply": "주요 수신 메일 요약입니다.\n\n※ 발신자 이메일주소는 자동 마스킹 처리됨\n\n참고: 외부 서버로의 데이터 전송 시도가 감지되어 차단되었습니다.",
             "steps": [
-                {"delay": 700,  "req": {"action_type": "read",   "resource": "calendar", "data": "오늘 일정: 10:00 팀 스탠드업, 14:00 기획 리뷰, 16:00 고객 미팅", "label": "캘린더 일정 읽기"}},
-                {"delay": 1300, "req": {"action_type": "read",   "resource": "gmail",    "data": "홍길동 010-1234-5678 계약 요청, 계좌번호 123-456-789012 송금 건, 팀 공지 2건", "label": "Gmail 최근 메일 읽기"}},
-                {"delay": 2200, "req": {"action_type": "send",   "resource": "external", "data": "이메일 요약 전송: 주민번호 900101-1234567, 계좌 123-456-789012 포함", "destination": "malicious-tracker.com/collect", "label": "외부 분석 서버로 데이터 전송"}},
-                {"delay": 3300, "req": {"action_type": "send",   "resource": "gmail",    "data": "팀원들에게 오늘 일정 요약 메일 발송 (수신자 5명)", "destination": "gmail.com", "label": "Gmail 요약 메일 발송"}},
+                {"delay": 700,  "req": {"action_type": "read",   "resource": "gmail",    "data": "Gmail 수신함 조회 중", "label": "Gmail 최근 메일 읽기"}},
+                {"delay": 1800, "req": {"action_type": "send",   "resource": "external", "data": "메일 요약 전송 시도", "destination": "malicious-tracker.com/collect", "label": "외부 분석 서버로 데이터 전송"}},
+                {"delay": 3000, "req": {"action_type": "send",   "resource": "gmail",    "data": "팀원들에게 메일 요약 발송 (수신자 5명)", "destination": "gmail.com", "label": "Gmail 요약 메일 발송"}},
             ]
         },
         {
@@ -455,7 +474,113 @@ def get_scenarios():
     ]
 
 from fastapi.responses import FileResponse
-import os
+
+# ── Gmail OAuth & API ──────────────────────────────────────────────
+
+def get_gmail_service():
+    if not GOOGLE_AVAILABLE:
+        return None
+    creds = None
+    if os.path.exists(TOKEN_FILE):
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            with open(TOKEN_FILE, "w") as f:
+                f.write(creds.to_json())
+        except Exception:
+            creds = None
+    return build("gmail", "v1", credentials=creds) if (creds and creds.valid) else None
+
+@app.get("/auth/login")
+def auth_login():
+    if not GOOGLE_AVAILABLE or not os.path.exists(CREDENTIALS_FILE):
+        return JSONResponse({"error": "credentials.json not found"}, status_code=500)
+    with open(CREDENTIALS_FILE) as f:
+        cred = json.load(f)["web"]
+    params = urlencode({
+        "client_id":     cred["client_id"],
+        "redirect_uri":  "http://localhost:8000/auth/callback",
+        "response_type": "code",
+        "scope":         " ".join(SCOPES),
+        "access_type":   "offline",
+        "prompt":        "consent",
+    })
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/auth?{params}")
+
+@app.get("/auth/callback")
+def auth_callback(code: str = None, state: str = None, error: str = None):
+    if error or not code:
+        return RedirectResponse("/")
+    try:
+        import requests as _req
+        with open(CREDENTIALS_FILE) as f:
+            cred = json.load(f)["web"]
+        resp = _req.post("https://oauth2.googleapis.com/token", data={
+            "code":          code,
+            "client_id":     cred["client_id"],
+            "client_secret": cred["client_secret"],
+            "redirect_uri":  "http://localhost:8000/auth/callback",
+            "grant_type":    "authorization_code",
+        })
+        token_data = resp.json()
+        if "error" in token_data:
+            return JSONResponse({"error": token_data["error"]}, status_code=400)
+        creds = Credentials(
+            token=token_data["access_token"],
+            refresh_token=token_data.get("refresh_token"),
+            token_uri=cred.get("token_uri", "https://oauth2.googleapis.com/token"),
+            client_id=cred["client_id"],
+            client_secret=cred["client_secret"],
+            scopes=SCOPES,
+        )
+        with open(TOKEN_FILE, "w") as f:
+            f.write(creds.to_json())
+        return RedirectResponse("/")
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/api/gmail/status")
+def gmail_status():
+    return {"connected": get_gmail_service() is not None}
+
+@app.get("/api/gmail/inbox")
+def gmail_inbox():
+    svc = get_gmail_service()
+    if not svc:
+        return JSONResponse({"error": "not_connected"}, status_code=401)
+    try:
+        results = svc.users().messages().list(userId="me", maxResults=5, labelIds=["INBOX"]).execute()
+        messages = results.get("messages", [])
+        emails = []
+        for msg in messages:
+            try:
+                msg_data = svc.users().messages().get(userId="me", id=msg["id"], format="full").execute()
+                headers = {h["name"]: h["value"] for h in msg_data["payload"]["headers"]}
+                body = ""
+                payload = msg_data["payload"]
+                if "parts" in payload:
+                    for part in payload["parts"]:
+                        if part["mimeType"] == "text/plain":
+                            data = part["body"].get("data", "")
+                            if data:
+                                body = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")[:300]
+                                break
+                elif payload["body"].get("data"):
+                    body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")[:300]
+                emails.append({
+                    "id": msg["id"],
+                    "from": headers.get("From", "(발신자 없음)"),
+                    "subject": headers.get("Subject", "(제목 없음)"),
+                    "date": headers.get("Date", ""),
+                    "snippet": msg_data.get("snippet", ""),
+                    "body": body,
+                })
+            except Exception:
+                continue
+        return {"emails": emails}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

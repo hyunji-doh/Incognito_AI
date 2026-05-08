@@ -18,6 +18,7 @@ let knownLogCount = 0;
 let currentApprovalId = null;
 let runAbort = null;
 let guardOn = true;
+let gmailConnected = false;
 
 const cnt = { allow: 0, block: 0, mask: 0, pending: 0 };
 
@@ -38,10 +39,12 @@ const guardLabel     = $('guard-label');
 
 // ── Init ───────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
-  [state, scenarios] = await Promise.all([
+  const [s, sc, gs] = await Promise.all([
     apiFetch('GET', '/api/state'),
     apiFetch('GET', '/api/scenarios'),
+    apiFetch('GET', '/api/gmail/status').catch(() => ({ connected: false })),
   ]);
+  state = s; scenarios = sc; gmailConnected = gs.connected;
   knownLogCount = state.logs.length;
 
   renderPermissions();
@@ -167,6 +170,11 @@ function renderPermissions() {
           <button class="seg-btn ${state.gmail_read_level === 'metadata' ? 'act-approve' : ''}" data-level="metadata">메타데이터만</button>
           <button class="seg-btn ${state.gmail_read_level !== 'metadata' ? 'act-allow' : ''}" data-level="full">전체 내용</button>
         </div>
+      </div>
+      <div class="gmail-connect-row">
+        ${gmailConnected
+          ? '<span class="gmail-connected-badge">Gmail 연결됨</span>'
+          : '<a href="/auth/login" class="gmail-connect-btn">Gmail 연결하기</a>'}
       </div>` : '';
 
     div.innerHTML = `
@@ -241,6 +249,15 @@ async function runScenario(sc) {
   await apiFetch('POST', '/api/sensitivity-preset', { preset: presetNeeded });
   applySensitivityUI(presetNeeded);
 
+  // Pre-fetch real Gmail for S1 if connected
+  let realEmails = null;
+  if (sc.id === 's1' && gmailConnected) {
+    try {
+      const inbox = await apiFetch('GET', '/api/gmail/inbox');
+      if (inbox.emails && inbox.emails.length > 0) realEmails = inbox.emails;
+    } catch (_) {}
+  }
+
   chatFeed.innerHTML = '';
   addChatMsg('user', sc.prompt);
   await sleep(400);
@@ -252,7 +269,30 @@ async function runScenario(sc) {
     await sleep(step.delay);
     if (signal.aborted) break;
 
-    const reqBody = guardOn ? step.req : { ...step.req, bypass: true };
+    // Use real Gmail data for gmail read step in S1
+    let stepReq = step.req;
+    if (realEmails && step.req.resource === 'gmail' && step.req.action_type === 'read') {
+      addChatMsg('agent', '실시간 Gmail 수신함 조회 중...');
+      await sleep(600);
+      if (signal.aborted) break;
+      addGmailEmailCards(realEmails);
+      await sleep(400);
+      if (signal.aborted) break;
+      const emailText = realEmails.slice(0, 3)
+        .map(e => `발신: ${e.from} 제목: ${e.subject} 내용: ${(e.snippet || e.body || '').slice(0, 120)}`)
+        .join(' | ');
+      stepReq = { ...step.req, data: emailText, label: 'Gmail 실시간 메일 읽기 (실제 연동)' };
+    }
+
+    // For S1 external send step, build payload from real Gmail data
+    if (realEmails && sc.id === 's1' && step.req.resource === 'external' && step.req.action_type === 'send') {
+      const summary = realEmails.slice(0, 3)
+        .map(e => `발신: ${e.from} 제목: ${e.subject}`)
+        .join(', ');
+      stepReq = { ...step.req, data: `메일 요약 외부 전송 시도: ${summary}` };
+    }
+
+    const reqBody = guardOn ? stepReq : { ...stepReq, bypass: true };
     let result;
     try { result = await apiFetch('POST', '/api/agent/action', reqBody); }
     catch (_) { break; }
@@ -260,8 +300,8 @@ async function runScenario(sc) {
     const timeTag = result.log?.time_ms != null ? ` · ${result.log.time_ms}ms` : '';
 
     if (result.status === 'bypassed') {
-      const preview = (step.req.data || '').slice(0, 50);
-      addChatMsg('danger', `<strong>${step.req.label}</strong>\n→ 노출됨 (보호 없음): ${preview}...${timeTag}`);
+      const preview = (stepReq.data || '').slice(0, 50);
+      addChatMsg('danger', `<strong>${stepReq.label}</strong>\n→ 노출됨 (보호 없음): ${preview}...${timeTag}`);
     } else {
       const statusText = result.status === 'allowed'   ? '허용됨' :
                          result.status === 'blocked'   ? '차단됨' : '승인 대기 중';
@@ -269,18 +309,23 @@ async function runScenario(sc) {
                          result.reason === 'untrusted_domain'  ? ` (미신뢰 도메인: ${result.domain})` :
                          result.reason === 'permission_denied' ? ' (권한 없음)' : '';
       const restricted = result.restricted ? ' (메타데이터만)' : '';
-      addChatMsg('agent', `<strong>${step.req.label}</strong>\n→ ${statusText}${reason}${restricted}${timeTag}`);
+      addChatMsg('agent', `<strong>${stepReq.label}</strong>\n→ ${statusText}${reason}${restricted}${timeTag}`);
 
-      if (result.masking && result.masking.length > 0) {
-        const types = [...new Set(result.masking.map(m => m.type))].join(', ');
-        addChatMsg('info', `민감정보 자동 마스킹 ${result.masking.length}건 (${types})`);
+      if (result.masking && result.masking.length > 0 && result.status !== 'blocked') {
+        addMaskingDetail(result.masking);
+      }
+
+      // S1: show data flow card when external send is blocked
+      if (sc.id === 's1' && realEmails && stepReq.resource === 'external' && result.status === 'blocked') {
+        addDataFlowCard(realEmails, stepReq.destination || step.req.destination, result.masking || []);
       }
     }
   }
 
   if (!signal.aborted) {
     await sleep(600);
-    if (sc.final_reply) addChatMsg('ai', sc.final_reply);
+    const finalMsg = (sc.id === 's1' && realEmails) ? buildS1Reply(realEmails) : sc.final_reply;
+    if (finalMsg) addChatMsg('ai', finalMsg);
     await sleep(300);
     addChatMsg('info', '오른쪽 로그에서 전체 행동 기록을 확인하세요.');
     $(`sc-${sc.id}`).classList.remove('running');
@@ -522,6 +567,111 @@ function wireEvents() {
   backdrop.addEventListener('click', e => {
     if (e.target === backdrop) backdrop.classList.remove('open');
   });
+}
+
+// ── S1 dynamic final reply ─────────────────────────────────────────
+function buildS1Reply(emails) {
+  const lines = emails.slice(0, 5).map(e => {
+    const sender = escHtml(e.from.replace(/<[^>]*>/g, '').replace(/"/g, '').trim());
+    const subject = escHtml(e.subject);
+    return `• ${sender} — ${subject}`;
+  }).join('\n');
+  const maskedCount = emails.length;
+  return `주요 수신 메일 (${emails.length}건):\n${lines}\n\n※ 발신자 이메일주소 ${maskedCount}건 자동 마스킹 처리됨\n\n참고: 외부 서버로의 데이터 전송 시도가 감지되어 차단되었습니다.`;
+}
+
+// ── Masking detail card ────────────────────────────────────────────
+function addMaskingDetail(maskingList) {
+  const empty = chatFeed.querySelector('.chat-empty');
+  if (empty) empty.remove();
+  const div = document.createElement('div');
+  div.className = 'chat-msg mask-detail';
+  const types = [...new Set(maskingList.map(m => m.type))].join(', ');
+  const rows = maskingList.map(m => `
+    <div class="mask-row">
+      <span class="mask-original">${escHtml(m.original)}</span>
+      <span class="mask-arrow">→</span>
+      <span class="mask-result">${escHtml(m.masked || '***')}</span>
+      <span class="mask-type-tag">${escHtml(m.type)}</span>
+    </div>`).join('');
+  div.innerHTML = `
+    <div class="mask-header">민감정보 자동 마스킹 ${maskingList.length}건 (${types})</div>
+    <div class="mask-rows">${rows}</div>`;
+  chatFeed.appendChild(div);
+  chatFeed.scrollTop = chatFeed.scrollHeight;
+}
+
+// ── Data flow tracking card ────────────────────────────────────────
+function addDataFlowCard(emails, destination, masking) {
+  const empty = chatFeed.querySelector('.chat-empty');
+  if (empty) empty.remove();
+
+  const srcRows = emails.slice(0, 3).map(e => {
+    const raw = e.from || '';
+    const nameMatch = raw.match(/^"?([^"<]+)"?\s*</);
+    const name = nameMatch ? nameMatch[1].trim() : raw.replace(/<[^>]*>/g, '').trim();
+    const emailMatch = raw.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/);
+    const email = emailMatch ? emailMatch[0] : '';
+    return `
+      <div class="flow-src-row">
+        <span class="flow-src-dot"></span>
+        <div>
+          <div class="flow-src-name">${escHtml(name)}</div>
+          ${email ? `<div class="flow-src-email">${escHtml(email)}</div>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  const piiCount = masking.length;
+  const piiTypes = piiCount > 0
+    ? [...new Set(masking.map(m => m.type))].join(' · ')
+    : '이메일주소';
+
+  const div = document.createElement('div');
+  div.className = 'chat-msg data-flow-card';
+  div.innerHTML = `
+    <div class="flow-card-hd">데이터 흐름 추적</div>
+    <div class="flow-body">
+      <div class="flow-col flow-col-src">
+        <div class="flow-col-label">출처 — Gmail 수신함</div>
+        ${srcRows}
+      </div>
+      <div class="flow-col-mid">
+        <div class="flow-pii-pill">${piiCount > 0 ? `PII ${piiCount}건 감지` : 'PII 감지'}<br><span class="flow-pii-type">${escHtml(piiTypes)}</span></div>
+        <div class="flow-arrow">→</div>
+      </div>
+      <div class="flow-col flow-col-dest">
+        <div class="flow-col-label">전송 시도 대상</div>
+        <div class="flow-dest-box">
+          <div class="flow-dest-url">${escHtml(destination || '')}</div>
+          <div class="flow-blocked-tag">✗ AgentGuard 차단</div>
+        </div>
+      </div>
+    </div>`;
+  chatFeed.appendChild(div);
+  chatFeed.scrollTop = chatFeed.scrollHeight;
+}
+
+// ── Gmail email cards ──────────────────────────────────────────────
+function addGmailEmailCards(emails) {
+  const empty = chatFeed.querySelector('.chat-empty');
+  if (empty) empty.remove();
+  const div = document.createElement('div');
+  div.className = 'chat-msg gmail-cards';
+  const cards = emails.slice(0, 3).map(e => `
+    <div class="email-card">
+      <div class="email-field"><span class="email-field-label">발신</span><span class="email-field-val">${escHtml(e.from)}</span></div>
+      <div class="email-field"><span class="email-field-label">제목</span><span class="email-field-val">${escHtml(e.subject)}</span></div>
+      <div class="email-field"><span class="email-field-label">날짜</span><span class="email-field-val">${escHtml(e.date)}</span></div>
+      ${(e.snippet || e.body) ? `<div class="email-body">${escHtml((e.snippet || e.body).slice(0, 120))}${(e.snippet || e.body).length > 120 ? '…' : ''}</div>` : ''}
+    </div>`).join('');
+  div.innerHTML = `<div class="gmail-inbox-header">✉ Gmail 수신함 — 실시간 연동 (${emails.length}건)</div>${cards}`;
+  chatFeed.appendChild(div);
+  chatFeed.scrollTop = chatFeed.scrollHeight;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // ── Util ───────────────────────────────────────────────────────────
