@@ -446,4 +446,232 @@ button { cursor: pointer; font-family: inherit; }
 
 /* ── Privacy mode body state ────────────────────────────────────── */
 body.privacy-active .header { border-bottom-color: var(--purple); }
-body.privacy-active .brand-icon::after { content: ' 🔒'; }
+body.privacy-active .brand-icon::after { content: ''; }
+
+/* ── Guard OFF body state ────────────────────────────────────────── */
+body.guard-off .header { border-bottom-color: var(--red); }
+
+/* ── Sensitivity preset selector ────────────────────────────────── */
+.header-sensitivity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+.sensitivity-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.preset-ctrl {
+  display: flex;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.preset-btn {
+  border: none;
+  background: transparent;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: background .15s, color .15s;
+  white-space: nowrap;
+}
+.preset-btn:not(:last-child) { border-right: 1px solid var(--border); }
+.preset-btn:hover { background: var(--card); color: var(--text); }
+.preset-btn.active.preset-standard { background: var(--green-dim);  color: var(--green);  }
+.preset-btn.active.preset-enhanced { background: var(--yellow-dim); color: var(--yellow); }
+.preset-btn.active.preset-maximum  { background: var(--red-dim);    color: var(--red);    }
+
+/* ── Guard toggle in simulator panel ────────────────────────────── */
+.agent-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.guard-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.guard-label-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+  transition: color .2s;
+}
+.guard-track { }
+.toggle input:checked + .guard-track { background: var(--green-dim); border-color: var(--green); }
+.toggle input:checked + .guard-track::after { background: var(--green); }
+.toggle input:not(:checked) + .guard-track { background: var(--red-dim); border-color: var(--red); }
+.toggle input:not(:checked) + .guard-track::after { transform: translateX(18px); background: var(--red); }
+
+/* ── Guard OFF banner ────────────────────────────────────────────── */
+.guard-off-banner {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 14px;
+  background: var(--red-dim);
+  border-bottom: 1px solid var(--red);
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  flex-shrink: 0;
+  animation: pulse 2s infinite;
+}
+
+/* ── Danger chat message (Guard OFF) ────────────────────────────── */
+.chat-msg.danger {
+  align-self: flex-start;
+  background: var(--red-dim);
+  border: 1px solid var(--red);
+  color: var(--red);
+  font-size: 12px;
+}
+.chat-msg.danger .chat-sender { color: var(--red); opacity: .8; }
+
+/* ── Gmail scope sub-control ─────────────────────────────────────── */
+.gmail-scope-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.gmail-scope-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.gmail-seg { flex: 1; }
+
+/* ── Metrics bar ─────────────────────────────────────────────────── */
+.metrics-bar {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  gap: 0;
+}
+.metric-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 18px;
+}
+.metric-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.metric-val {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--blue);
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+}
+.metric-div {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+.metric-spacer { flex: 1; }
+.benchmark-btn {
+  padding: 5px 14px;
+  border: 1px solid var(--blue);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background .15s, color .15s;
+}
+.benchmark-btn:hover    { background: var(--blue); color: var(--bg); }
+.benchmark-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── Scenario s4 (injection) ─────────────────────────────────────── */
+.scenario-btn.s4-btn:hover   { border-color: var(--red);    background: var(--red-dim);    }
+.scenario-btn.s4-btn.running { border-color: var(--red);    background: var(--red-dim);    pointer-events: none; animation: pulse 1.5s infinite; }
+
+/* ── Log response time tag ───────────────────────────────────────── */
+.log-ms {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
+/* ── Benchmark modal ─────────────────────────────────────────────── */
+.bench-modal {
+  width: 700px;
+  max-width: 96vw;
+  text-align: left;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.bench-summary {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin: 16px 0 10px;
+}
+.bench-stat {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 8px;
+  text-align: center;
+}
+.bench-val { font-size: 20px; font-weight: 700; line-height: 1.2; }
+.bench-lbl { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
+.bench-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  padding: 6px 10px;
+  background: var(--card);
+  border-radius: var(--radius-sm);
+}
+.bench-table-wrap { overflow-x: auto; }
+.bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.bench-table th, .bench-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.bench-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+  background: var(--card);
+  position: sticky;
+  top: 0;
+}
+.bench-text { color: var(--text); max-width: 220px; }
+.bench-time { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.outcome-tp { color: var(--green);   font-weight: 600; }
+.outcome-tn { color: var(--text-muted); }
+.outcome-fp { color: var(--red);     font-weight: 600; }
+.outcome-fn { color: var(--yellow);  font-weight: 600; }

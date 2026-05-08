@@ -10,7 +10,7 @@
 
 <header class="header">
   <div class="header-brand">
-    <span class="brand-icon">🛡️</span>
+    <span class="brand-icon"></span>
     <div>
       <div class="brand-name">AgentGuard</div>
       <div class="brand-sub">AI 에이전트 보안 관제 시스템</div>
@@ -19,28 +19,24 @@
 
   <div class="header-stats">
     <div class="stat-chip stat-allow">
-      <span>✅</span>
       <div>
         <div class="stat-num" id="cnt-allow">0</div>
         <div class="stat-lbl">허용</div>
       </div>
     </div>
     <div class="stat-chip stat-block">
-      <span>🚫</span>
       <div>
         <div class="stat-num" id="cnt-block">0</div>
         <div class="stat-lbl">차단</div>
       </div>
     </div>
     <div class="stat-chip stat-mask">
-      <span>🔒</span>
       <div>
         <div class="stat-num" id="cnt-mask">0</div>
         <div class="stat-lbl">마스킹</div>
       </div>
     </div>
     <div class="stat-chip stat-pending">
-      <span>⏳</span>
       <div>
         <div class="stat-num" id="cnt-pending">0</div>
         <div class="stat-lbl">승인 대기</div>
@@ -48,24 +44,47 @@
     </div>
   </div>
 
-  <div class="header-privacy">
-    <div class="privacy-label-wrap">
-      <span class="privacy-icon" id="privacy-icon">🔓</span>
-      <span id="privacy-label">프라이버시 모드</span>
+  <div class="header-sensitivity">
+    <span class="sensitivity-label">보안 프리셋</span>
+    <div class="preset-ctrl">
+      <button class="preset-btn preset-standard active" id="preset-standard" data-preset="standard">표준</button>
+      <button class="preset-btn preset-enhanced" id="preset-enhanced" data-preset="enhanced">강화</button>
+      <button class="preset-btn preset-maximum" id="preset-maximum" data-preset="maximum">최고보안</button>
     </div>
-    <label class="toggle">
-      <input type="checkbox" id="privacy-toggle">
-      <span class="toggle-track"></span>
-    </label>
   </div>
 </header>
+
+<!-- Live metrics bar -->
+<div class="metrics-bar">
+  <div class="metric-item">
+    <span class="metric-label">평균 응답</span>
+    <span class="metric-val" id="m-avg-ms">—</span>
+  </div>
+  <div class="metric-div"></div>
+  <div class="metric-item">
+    <span class="metric-label">차단율</span>
+    <span class="metric-val" id="m-block-rate">—</span>
+  </div>
+  <div class="metric-div"></div>
+  <div class="metric-item">
+    <span class="metric-label">마스킹 탐지율</span>
+    <span class="metric-val" id="m-mask-rate">—</span>
+  </div>
+  <div class="metric-div"></div>
+  <div class="metric-item">
+    <span class="metric-label">인젝션 차단율</span>
+    <span class="metric-val" id="m-inject-rate">—</span>
+  </div>
+  <div class="metric-spacer"></div>
+  <button class="benchmark-btn" id="btn-benchmark">벤치마크 실행</button>
+</div>
 
 <main class="layout">
 
   <!-- LEFT: Permissions -->
   <aside class="panel" id="panel-perms">
     <div class="panel-hd">
-      <h2>🔐 권한 설정</h2>
+      <h2>권한 설정</h2>
       <p class="panel-sub">스마트폰처럼 AI 에이전트 권한을 직접 설정하세요</p>
     </div>
     <div class="panel-body" id="perms-list"></div>
@@ -78,29 +97,41 @@
 
   <!-- CENTER: Simulator -->
   <section class="panel" id="panel-agent">
-    <div class="panel-hd">
-      <h2>💬 에이전트 시뮬레이터</h2>
-      <p class="panel-sub">시나리오를 눌러 보안 흐름을 직접 체험하세요</p>
+    <div class="panel-hd agent-hd">
+      <div>
+        <h2>에이전트 시뮬레이터</h2>
+        <p class="panel-sub">시나리오를 눌러 보안 흐름을 직접 체험하세요</p>
+      </div>
+      <div class="guard-ctrl" id="guard-ctrl">
+        <span class="guard-label-text" id="guard-label">AgentGuard ON</span>
+        <label class="toggle guard-toggle">
+          <input type="checkbox" id="guard-toggle" checked>
+          <span class="toggle-track guard-track"></span>
+        </label>
+      </div>
     </div>
     <div id="scenarios-row"></div>
+    <div class="guard-off-banner" id="guard-off-banner">
+      AgentGuard 비활성화 — 마스킹·차단·권한 검사 없이 원본 데이터 노출
+    </div>
     <div class="chat-wrap">
       <div class="chat-feed" id="chat-feed">
         <div class="chat-empty">
-          <div class="empty-icon">🤖</div>
+          <div class="empty-icon"></div>
           <div class="empty-title">AI 에이전트 대기 중</div>
           <div class="empty-sub">위 시나리오 버튼을 클릭해 시뮬레이션을 시작하세요.</div>
         </div>
       </div>
     </div>
     <div class="privacy-banner" id="privacy-banner">
-      🔒 프라이버시 모드 활성화 — 외부 API 전송이 모두 차단됩니다
+      최고보안 모드 — 모든 외부 전송이 차단됩니다
     </div>
   </section>
 
   <!-- RIGHT: Logs -->
   <aside class="panel" id="panel-logs">
     <div class="panel-hd log-hd">
-      <h2>📋 행동 로그</h2>
+      <h2>행동 로그</h2>
       <button class="clear-btn" id="btn-clear">초기화</button>
     </div>
     <div class="panel-body log-feed" id="log-feed">
@@ -115,13 +146,25 @@
 <!-- Approval Modal -->
 <div class="modal-backdrop" id="modal-backdrop">
   <div class="modal">
-    <div class="modal-icon">⚠️</div>
+    <div class="modal-icon"></div>
     <div class="modal-title">사용자 승인 필요</div>
     <div class="modal-sub">AI 에이전트가 다음 작업을 요청합니다</div>
     <div class="modal-card" id="modal-content"></div>
     <div class="modal-btns">
-      <button class="btn-deny" id="btn-deny">❌ 거부</button>
-      <button class="btn-approve" id="btn-approve">✅ 승인</button>
+      <button class="btn-deny" id="btn-deny">거부</button>
+      <button class="btn-approve" id="btn-approve">승인</button>
+    </div>
+  </div>
+</div>
+
+<!-- Benchmark Modal -->
+<div class="modal-backdrop" id="bench-backdrop">
+  <div class="modal bench-modal">
+    <div class="modal-title">민감정보 탐지 성능 벤치마크</div>
+    <div class="modal-sub">정규식 기반 탐지 엔진 — 테스트셋 27건 (탐지 가능 15건 + 한계 케이스 2건 + 음성 10건)</div>
+    <div id="bench-content"></div>
+    <div class="modal-btns" style="margin-top:14px">
+      <button class="btn-approve" id="btn-bench-close" style="flex:none;padding:9px 36px">닫기</button>
     </div>
   </div>
 </div>
