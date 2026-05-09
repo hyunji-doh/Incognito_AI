@@ -676,6 +676,115 @@ body.guard-off .header { border-bottom-color: var(--red); }
 .outcome-fp { color: var(--red);     font-weight: 600; }
 .outcome-fn { color: var(--yellow);  font-weight: 600; }
 
+/* ── Benchmark comparison table ──────────────────────────────────── */
+.bench-compare-table {
+  margin: 16px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.compare-table-title {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.compare-table thead tr {
+  background: var(--surface);
+}
+.compare-th-metric {
+  padding: 8px 14px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 11px;
+  width: 34%;
+}
+.compare-th-keyword {
+  padding: 8px 14px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--yellow);
+  background: var(--yellow-dim);
+  border-left: 1px solid var(--border);
+  width: 33%;
+}
+.compare-th-agentguard {
+  padding: 8px 14px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--green);
+  background: var(--green-dim);
+  border-left: 1px solid var(--border);
+  width: 33%;
+}
+.compare-table tbody tr {
+  border-top: 1px solid var(--border);
+}
+.compare-table tbody tr:hover { background: var(--surface); }
+.compare-td-metric {
+  padding: 9px 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.compare-td-keyword {
+  padding: 9px 14px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--yellow);
+  border-left: 1px solid var(--border);
+}
+.compare-td-agentguard {
+  padding: 9px 14px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--green);
+  border-left: 1px solid var(--border);
+}
+.compare-diff {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 1px 6px;
+  background: var(--green-dim);
+  color: var(--green);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+.compare-no {
+  color: var(--red);
+  font-weight: 600;
+}
+.compare-no-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+.compare-yes {
+  color: var(--green);
+  font-weight: 700;
+}
+.compare-table-note {
+  padding: 7px 14px;
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--card);
+  border-top: 1px solid var(--border);
+}
+
 /* ── Masking detail card ────────────────────────────────────────── */
 .chat-msg.mask-detail {
   background: rgba(248,81,73,0.07);
@@ -896,6 +1005,55 @@ body.guard-off .header { border-bottom-color: var(--red); }
   color: var(--text-muted);
   font-size: 11px;
   line-height: 1.5;
+}
+
+/* ── Proxy block card ────────────────────────────────────────────── */
+.chat-msg.proxy-block-card {
+  background: var(--red-dim);
+  border: 1px solid var(--red);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 4px 0;
+  max-width: 100%;
+}
+.proxy-block-hd {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--red);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 10px;
+}
+.proxy-block-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.proxy-block-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  width: 80px;
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+.proxy-block-url {
+  font-family: 'Consolas', monospace;
+  color: var(--red);
+  font-size: 11px;
+  word-break: break-all;
+}
+.proxy-block-reason {
+  color: var(--text);
+  font-size: 12px;
+}
+.proxy-block-code {
+  font-family: 'Consolas', monospace;
+  font-weight: 700;
+  color: var(--red);
+  font-size: 12px;
 }
 
 /* ── Gmail connect button & status ─────────────────────────────── */

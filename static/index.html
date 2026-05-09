@@ -77,6 +77,7 @@
   </div>
   <div class="metric-spacer"></div>
   <button class="benchmark-btn" id="btn-benchmark">벤치마크 실행</button>
+  <button class="benchmark-btn" id="btn-email-analysis" style="margin-left:8px">실메일 분석</button>
 </div>
 
 <main class="layout">
@@ -161,10 +162,22 @@
 <div class="modal-backdrop" id="bench-backdrop">
   <div class="modal bench-modal">
     <div class="modal-title">민감정보 탐지 성능 벤치마크</div>
-    <div class="modal-sub">정규식 기반 탐지 엔진 — 테스트셋 27건 (탐지 가능 15건 + 한계 케이스 2건 + 음성 10건)</div>
+    <div class="modal-sub">정규식 기반 탐지 엔진 — 테스트셋 100건 (탐지 가능 60건 + 한계 케이스 10건 + 음성 30건)</div>
     <div id="bench-content"></div>
     <div class="modal-btns" style="margin-top:14px">
       <button class="btn-approve" id="btn-bench-close" style="flex:none;padding:9px 36px">닫기</button>
+    </div>
+  </div>
+</div>
+
+<!-- Email Analysis Modal -->
+<div class="modal-backdrop" id="email-analysis-backdrop">
+  <div class="modal bench-modal">
+    <div class="modal-title">실제 이메일 PII 분석</div>
+    <div class="modal-sub">Gmail 수신함 50건 — 실제 데이터 기반 민감정보 탐지 결과</div>
+    <div id="email-analysis-content"></div>
+    <div class="modal-btns" style="margin-top:14px">
+      <button class="btn-approve" id="btn-email-analysis-close" style="flex:none;padding:9px 36px">닫기</button>
     </div>
   </div>
 </div>

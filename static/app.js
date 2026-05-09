@@ -235,8 +235,71 @@ function renderScenarios() {
   });
 }
 
+// ── S1 scenario via server-side proxy ─────────────────────────────
+async function runS1(sc) {
+  if (runAbort) runAbort.abort();
+  const controller = new AbortController();
+  runAbort = controller;
+  const signal = controller.signal;
+
+  document.querySelectorAll('.scenario-btn').forEach(b => b.classList.remove('running'));
+  $('sc-s1').classList.add('running');
+  chatFeed.innerHTML = '';
+
+  await apiFetch('POST', '/api/sensitivity-preset', { preset: 'standard' });
+  applySensitivityUI('standard');
+
+  addChatMsg('user', sc.prompt);
+  await sleep(400);
+  addChatMsg('ai', `요청 분석 완료. 다음 순서로 처리합니다:\n${sc.desc}`);
+  await sleep(700);
+  if (signal.aborted) return;
+
+  addChatMsg('agent', '에이전트가 권한 브로커를 통해 요청을 처리합니다...');
+  await sleep(500);
+
+  let data;
+  try { data = await apiFetch('POST', '/api/s1/run'); }
+  catch (e) { addChatMsg('agent', '오류: ' + e.message); $('sc-s1').classList.remove('running'); return; }
+
+  for (const step of data.steps) {
+    if (signal.aborted) break;
+    await sleep(900);
+    const timeTag = step.time_ms != null ? ` · ${step.time_ms}ms` : '';
+
+    if (step.id === 'gmail_read') {
+      addChatMsg('agent', '실시간 Gmail 수신함 조회 중...');
+      await sleep(500);
+      if (step.emails && step.emails.length > 0) addGmailEmailCards(step.emails);
+      await sleep(300);
+      addChatMsg('agent', `<strong>${step.label}</strong>\n경로: ${escHtml(step.proxy_path)}\n→ 허용됨${timeTag}`);
+      if (step.masking && step.masking.length > 0) addMaskingDetail(step.masking);
+
+    } else if (step.id === 'external_block') {
+      addChatMsg('agent', `<strong>${step.label}</strong>\n경로: ${escHtml(step.proxy_path)}\n→ 차단됨 (미신뢰 도메인: ${escHtml(step.domain)})${timeTag}`);
+      if (step.source_emails && step.source_emails.length > 0) {
+        addDataFlowCard(step.source_emails, step.domain + '/collect', step.masking || []);
+      }
+
+    } else if (step.id === 'gmail_send') {
+      addChatMsg('agent', `<strong>${step.label}</strong>\n경로: ${escHtml(step.proxy_path)}\n→ ${escHtml(step.result)}${timeTag}`);
+    }
+  }
+
+  if (!signal.aborted) {
+    await sleep(600);
+    const emails = data.steps.find(s => s.id === 'gmail_read')?.emails || [];
+    addChatMsg('ai', emails.length > 0 ? buildS1Reply(emails) : sc.final_reply);
+    await sleep(300);
+    addChatMsg('info', '오른쪽 로그에서 전체 행동 기록을 확인하세요.');
+    $('sc-s1').classList.remove('running');
+    runAbort = null;
+  }
+}
+
 // ── Run scenario ───────────────────────────────────────────────────
 async function runScenario(sc) {
+  if (sc.id === 's1') { await runS1(sc); return; }
   if (runAbort) runAbort.abort();
   const controller = new AbortController();
   runAbort = controller;
@@ -249,15 +312,6 @@ async function runScenario(sc) {
   await apiFetch('POST', '/api/sensitivity-preset', { preset: presetNeeded });
   applySensitivityUI(presetNeeded);
 
-  // Pre-fetch real Gmail for S1 if connected
-  let realEmails = null;
-  if (sc.id === 's1' && gmailConnected) {
-    try {
-      const inbox = await apiFetch('GET', '/api/gmail/inbox');
-      if (inbox.emails && inbox.emails.length > 0) realEmails = inbox.emails;
-    } catch (_) {}
-  }
-
   chatFeed.innerHTML = '';
   addChatMsg('user', sc.prompt);
   await sleep(400);
@@ -269,28 +323,7 @@ async function runScenario(sc) {
     await sleep(step.delay);
     if (signal.aborted) break;
 
-    // Use real Gmail data for gmail read step in S1
     let stepReq = step.req;
-    if (realEmails && step.req.resource === 'gmail' && step.req.action_type === 'read') {
-      addChatMsg('agent', '실시간 Gmail 수신함 조회 중...');
-      await sleep(600);
-      if (signal.aborted) break;
-      addGmailEmailCards(realEmails);
-      await sleep(400);
-      if (signal.aborted) break;
-      const emailText = realEmails.slice(0, 3)
-        .map(e => `발신: ${e.from} 제목: ${e.subject} 내용: ${(e.snippet || e.body || '').slice(0, 120)}`)
-        .join(' | ');
-      stepReq = { ...step.req, data: emailText, label: 'Gmail 실시간 메일 읽기 (실제 연동)' };
-    }
-
-    // For S1 external send step, build payload from real Gmail data
-    if (realEmails && sc.id === 's1' && step.req.resource === 'external' && step.req.action_type === 'send') {
-      const summary = realEmails.slice(0, 3)
-        .map(e => `발신: ${e.from} 제목: ${e.subject}`)
-        .join(', ');
-      stepReq = { ...step.req, data: `메일 요약 외부 전송 시도: ${summary}` };
-    }
 
     const reqBody = guardOn ? stepReq : { ...stepReq, bypass: true };
     let result;
@@ -482,7 +515,64 @@ function renderBenchmarkModal(d) {
   const outcomeColor = { TP: 'tp', FP: 'fp', TN: 'tn', FN: 'fn' };
   const outcomeLabel = { TP: '정탐', FP: '오탐', TN: '정상', FN: '미탐' };
 
+  const kb = d.keyword_baseline;
+  const recallDiff = kb ? (d.recall - kb.recall).toFixed(1) : 0;
+  const f1Diff     = kb ? (d.f1_score - kb.f1_score).toFixed(1) : 0;
+  const compareHtml = kb ? `
+    <div class="bench-compare-table">
+      <div class="compare-table-title">탐지 방식별 성능 비교 — 동일 테스트셋 100건 적용</div>
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th class="compare-th-metric">평가 지표</th>
+            <th class="compare-th-keyword">키워드 방식 (기존)</th>
+            <th class="compare-th-agentguard">AgentGuard (정규식)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="compare-td-metric">탐지율 (Recall)</td>
+            <td class="compare-td-keyword">${kb.recall}%</td>
+            <td class="compare-td-agentguard">
+              ${d.recall}%
+              <span class="compare-diff">+${recallDiff}%p</span>
+            </td>
+          </tr>
+          <tr>
+            <td class="compare-td-metric">정밀도 (Precision)</td>
+            <td class="compare-td-keyword">${kb.precision}%</td>
+            <td class="compare-td-agentguard">${d.precision}%</td>
+          </tr>
+          <tr>
+            <td class="compare-td-metric">F1 Score</td>
+            <td class="compare-td-keyword">${kb.f1_score}%</td>
+            <td class="compare-td-agentguard">
+              ${d.f1_score}%
+              <span class="compare-diff">+${f1Diff}%p</span>
+            </td>
+          </tr>
+          <tr>
+            <td class="compare-td-metric">오탐률 (FPR)</td>
+            <td class="compare-td-keyword">${kb.false_positive_rate}%</td>
+            <td class="compare-td-agentguard">${d.false_positive_rate}%</td>
+          </tr>
+          <tr>
+            <td class="compare-td-metric">미탐 건수 (FN)</td>
+            <td class="compare-td-keyword">${kb.fn}건</td>
+            <td class="compare-td-agentguard">${d.fn}건 <span class="compare-diff">-${kb.fn - d.fn}건</span></td>
+          </tr>
+          <tr>
+            <td class="compare-td-metric">실제 값 마스킹</td>
+            <td class="compare-td-keyword compare-no">불가<span class="compare-no-sub"> (탐지만 가능)</span></td>
+            <td class="compare-td-agentguard compare-yes">자동 마스킹</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="compare-table-note">키워드 방식: TP ${kb.tp} / FN ${kb.fn} / TN ${kb.tn} / FP ${kb.fp} &nbsp;|&nbsp; AgentGuard: TP ${d.tp} / FN ${d.fn} / TN ${d.tn} / FP ${d.fp}</div>
+    </div>` : '';
+
   const summary = `
+    ${compareHtml}
     <div class="bench-summary">
       <div class="bench-stat">
         <div class="bench-val" style="color:var(--green)">${d.recall}%</div>
@@ -564,9 +654,86 @@ function wireEvents() {
     if (e.target === benchBackdrop) benchBackdrop.classList.remove('open');
   });
 
+  $('btn-email-analysis').addEventListener('click', runEmailAnalysis);
+  $('btn-email-analysis-close').addEventListener('click', () => $('email-analysis-backdrop').classList.remove('open'));
+  $('email-analysis-backdrop').addEventListener('click', e => {
+    if (e.target === $('email-analysis-backdrop')) $('email-analysis-backdrop').classList.remove('open');
+  });
+
   backdrop.addEventListener('click', e => {
     if (e.target === backdrop) backdrop.classList.remove('open');
   });
+}
+
+// ── Email Analysis ─────────────────────────────────────────────────
+async function runEmailAnalysis() {
+  const btn = $('btn-email-analysis');
+  btn.textContent = '분석 중...';
+  btn.disabled = true;
+  try {
+    const data = await apiFetch('GET', '/api/email-analysis');
+    renderEmailAnalysisModal(data);
+    $('email-analysis-backdrop').classList.add('open');
+  } catch(e) {
+    alert('Gmail 연결이 필요합니다.');
+  } finally {
+    btn.textContent = '실메일 분석';
+    btn.disabled = false;
+  }
+}
+
+function renderEmailAnalysisModal(d) {
+  const typeRows = Object.entries(d.by_type)
+    .sort((a, b) => b[1] - a[1])
+    .map(([type, cnt]) => `
+      <tr>
+        <td>${escHtml(type)}</td>
+        <td><strong>${cnt}건</strong></td>
+        <td>${d.total_pii_items > 0 ? Math.round(cnt/d.total_pii_items*100) : 0}%</td>
+      </tr>`).join('');
+
+  const exRows = d.examples.map((ex, i) => `
+    <div class="bench-case-row">
+      <span class="bench-text" style="color:var(--text-muted);min-width:24px">${i+1}.</span>
+      <span class="bench-text" style="flex:1">${escHtml(ex.subject || '(제목 없음)')}</span>
+      ${ex.has_pii
+        ? `<span class="bench-outcome tp">${ex.pii_types.join(', ')} ${ex.count}건</span>`
+        : `<span class="bench-outcome tn">PII 없음</span>`}
+    </div>`).join('');
+
+  $('email-analysis-content').innerHTML = `
+    <div class="bench-summary">
+      <div class="bench-stat">
+        <div class="bench-val" style="color:var(--blue)">${d.total_emails}</div>
+        <div class="bench-lbl">분석 이메일</div>
+      </div>
+      <div class="bench-stat">
+        <div class="bench-val" style="color:var(--red)">${d.pii_emails}</div>
+        <div class="bench-lbl">PII 포함</div>
+      </div>
+      <div class="bench-stat">
+        <div class="bench-val" style="color:var(--yellow)">${d.pii_rate}%</div>
+        <div class="bench-lbl">PII 포함률</div>
+      </div>
+      <div class="bench-stat">
+        <div class="bench-val" style="color:var(--purple)">${d.total_pii_items}</div>
+        <div class="bench-lbl">총 탐지 건수</div>
+      </div>
+      <div class="bench-stat">
+        <div class="bench-val" style="color:var(--green)">${d.avg_time_ms}ms</div>
+        <div class="bench-lbl">평균 처리 시간</div>
+      </div>
+    </div>
+    <div style="margin:16px 0 8px;font-weight:600;font-size:13px">유형별 탐지 현황</div>
+    <table class="bench-table" style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr><th style="text-align:left;padding:6px 8px">PII 유형</th><th style="padding:6px 8px">탐지 건수</th><th style="padding:6px 8px">비율</th></tr></thead>
+      <tbody>${typeRows || '<tr><td colspan="3" style="text-align:center;padding:12px;color:var(--text-muted)">탐지된 PII 없음</td></tr>'}</tbody>
+    </table>
+    ${d.examples.length > 0 ? `
+    <div style="margin:16px 0 8px;font-weight:600;font-size:13px">전체 이메일 목록 (${d.examples.length}건)</div>
+    <div class="bench-cases" style="max-height:300px;overflow-y:auto">${exRows}</div>` : ''}
+    <div style="margin-top:14px;font-size:11px;color:var(--text-muted)">※ 이메일 본문은 서버에서 즉시 처리 후 폐기되며 저장되지 않습니다.</div>
+  `;
 }
 
 // ── S1 dynamic final reply ─────────────────────────────────────────
